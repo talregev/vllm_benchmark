@@ -1,0 +1,159 @@
+name: vcpkg
+on:
+  pull_request:
+
+# Every time you make a push to your PR, it cancel immediately the previous checks,
+# and start a new one. The other runner will be available more quickly to your PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.os }}-${{ matrix.backend }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:      
+          - os: ubuntu-latest
+            backend: openvino
+          - os: ubuntu-latest
+            backend: cpu
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build vLLM OpenVino
+        if: ${{ matrix.backend == 'openvino' }}
+        shell: bash
+        run: |
+          # Build vLLM from source for CPU with OpenVino
+          git clone https://github.com/vllm-project/vllm-openvino.git --depth 1
+          cd vllm-openvino
+          docker build . -f Dockerfile \
+            --tag vllm-openvino-env
+          cd ..
+
+      - name: Run OpenVino vllm in docker
+        if: ${{ matrix.backend == 'openvino' }}
+        env:
+          HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
+        shell: bash
+        run: |
+          docker run -d --rm \
+            --name vllm-server \
+            --security-opt seccomp=unconfined \
+            --cap-add SYS_NICE \
+            --shm-size=4g \
+            -p 8000:8000 \
+            -e VLLM_OPENVINO_DEVICE=CPU \
+            -e VLLM_OPENVINO_ENABLE_QUANTIZED_WEIGHTS=ON \
+            -e VLLM_OPENVINO_KVCACHE_SPACE=12 \
+            -e VLLM_OPENVINO_KV_CACHE_PRECISION=u8 \
+            -e HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN \
+            vllm-openvino-env \
+            python3 -m vllm.entrypoints.openai.api_server \
+            --model meta-llama/Llama-3.2-1B-Instruct \
+            --host 0.0.0.0 --port 8000 \
+            --max-model-len 1024 \
+            --max-num-seqs $(nproc)
+
+      - name: Build vLLM (CPU-only)
+        if: ${{ matrix.backend == 'cpu' }}
+        shell: bash
+        run: |
+          # Build vLLM from source for CPU (no CUDA)
+          git clone https://github.com/vllm-project/vllm.git -b v0.10.2 --depth 1
+          cd vllm
+          docker build . -f docker/Dockerfile.cpu \
+            --build-arg VLLM_CPU_AVX512BF16=false \
+            --build-arg VLLM_CPU_AVX512VNNI=false \
+            --build-arg VLLM_CPU_DISABLE_AVX512=false \
+            --tag vllm-cpu-env \
+            --target vllm-openai
+          cd ..
+
+      - name: Run vllm in docker
+        if: ${{ matrix.backend == 'cpu' }}
+        env:
+          HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
+        shell: bash
+        run: |
+          docker run -d --rm \
+            --name vllm-server \
+            --security-opt seccomp=unconfined \
+            --cap-add SYS_NICE \
+            --shm-size=4g \
+            -p 8000:8000 \
+            -e HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN \
+            -e VLLM_CPU_KVCACHE_SPACE=12 \
+            vllm-cpu-env \
+            --model meta-llama/Llama-3.2-1B-Instruct \
+            --dtype bfloat16 \
+            --host 0.0.0.0 --port 8000 \
+            --max-model-len 1024 \
+            --max-num-seqs $(nproc)
+
+      - name: Run smoke test
+        shell: bash
+        run: |
+          # Wait until the server is ready, then run a curl test
+          until curl -sf http://localhost:8000/health >/dev/null; do
+            echo -n .
+            sleep 2
+          done
+          echo " READY"
+          docker logs --tail 3 vllm-server
+          curl http://localhost:8000/v1/completions \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "model": "meta-llama/Llama-3.2-1B-Instruct",
+              "prompt": "Who is the spacex ceo?",
+              "max_tokens": 20
+            }'
+      - name: Install python dependencies for benchmark + reports
+        shell: bash
+        run: |
+          pip install guidellm
+          pip install pandas seaborn matplotlib
+
+      - name: Run guidellm benchmark
+        shell: bash
+        env:
+          HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
+        run: |
+          echo nproc: $(nproc)
+          lscpu
+          echo
+          echo Starting Benchmarking:
+          for i in 1 2 4 6 8; do
+            start=$(date +%s)
+            echo Benchmarking concurrency $i:
+            # export GUIDELLM__MAX_CONCURRENCY=$i
+            guidellm benchmark \
+              --target "http://localhost:8000" \
+              --rate-type concurrent \
+              --rate $i \
+              --max-requests 24 \
+              --data "prompt_tokens=128,output_tokens=64" \
+              --output-path "./benchmark-results/$i.json"
+            end=$(date +%s)
+            elapsed=$(( end - start ))
+            echo Benchmarking concurrency $i Finished
+            printf "Elapsed: %d minutes %d seconds\n" $((elapsed/60)) $((elapsed%60))
+          done
+          ls benchmark-results
+
+      - name: Run guidellm benchmark
+        shell: bash
+        run: |
+          echo Start reports
+
+      - name: Upload json
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux_logs_${{ matrix.backend }}_${{ github.event.pull_request.head.sha }}
+          path: |
+            benchmark-results/*.json
+

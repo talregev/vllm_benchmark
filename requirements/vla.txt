@@ -1,0 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+git+https://github.com/huggingface/lerobot.git#egg=lerobot[libero]
+accelerate
+num2words

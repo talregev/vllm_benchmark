@@ -297,86 +297,86 @@ jobs:
               "stream": false
             }'
 
-      - name: Show help and all quility tests names.
-        shell: bash
-        run: |
-          echo help:
-          lm_eval \
-            --help
+      # - name: Show help and all quility tests names.
+      #   shell: bash
+      #   run: |
+      #     echo help:
+      #     lm_eval \
+      #       --help
 
-          echo " "
-          echo list_groups:
-          lm_eval \
-            --tasks list_groups
+      #     echo " "
+      #     echo list_groups:
+      #     lm_eval \
+      #       --tasks list_groups
 
-          echo " "
-          echo task list
-          lm_eval \
-            --tasks list
+      #     echo " "
+      #     echo task list
+      #     lm_eval \
+      #       --tasks list
 
-      - name: Run Code generation test
-        shell: bash
-        run: |
-          export HF_ALLOW_CODE_EVAL=1
-          task=mbpp
-          lm_eval \
-            --confirm_run_unsafe_code \
-            --model local-chat-completions \
-            --apply_chat_template \
-            --model_args model=meta-llama/Llama-3.2-1B-Instruct,base_url=http://localhost:8000/v1/chat/completions,num_concurrent=1,max_retries=3 \
-            --tasks ${task} \
-            --gen_kwargs max_tokens=128,temperature=0 \
-            --limit 20 \
-            --batch_size 1 \
-            --seed 1234 \
-            --log_samples \
-            --output_path quality-results/${task}_${{ matrix.backend }}.json
+      # - name: Run Code generation test
+      #   shell: bash
+      #   run: |
+      #     export HF_ALLOW_CODE_EVAL=1
+      #     task=mbpp
+      #     lm_eval \
+      #       --confirm_run_unsafe_code \
+      #       --model local-chat-completions \
+      #       --apply_chat_template \
+      #       --model_args model=meta-llama/Llama-3.2-1B-Instruct,base_url=http://localhost:8000/v1/chat/completions,num_concurrent=1,max_retries=3 \
+      #       --tasks ${task} \
+      #       --gen_kwargs max_tokens=128,temperature=0 \
+      #       --limit 20 \
+      #       --batch_size 1 \
+      #       --seed 1234 \
+      #       --log_samples \
+      #       --output_path quality-results/${task}_${{ matrix.backend }}.json
 
-          eval "$RENAME_FN"
-          rename_samples_task_file ${task}
+      #     eval "$RENAME_FN"
+      #     rename_samples_task_file ${task}
 
-      - name: Run Summarization test
-        shell: bash
-        run: |
-          task=xsum
-          lm_eval \
-            --model local-chat-completions \
-            --apply_chat_template \
-            --model_args model=meta-llama/Llama-3.2-1B-Instruct,base_url=http://localhost:8000/v1/chat/completions,num_concurrent=1,max_retries=3 \
-            --tasks ${task} \
-            --gen_kwargs max_tokens=128,temperature=0.2 \
-            --limit 20 \
-            --batch_size 1 \
-            --seed 1234 \
-            --log_samples \
-            --output_path quality-results/${task}_${{ matrix.backend }}.json
+      # - name: Run Summarization test
+      #   shell: bash
+      #   run: |
+      #     task=xsum
+      #     lm_eval \
+      #       --model local-chat-completions \
+      #       --apply_chat_template \
+      #       --model_args model=meta-llama/Llama-3.2-1B-Instruct,base_url=http://localhost:8000/v1/chat/completions,num_concurrent=1,max_retries=3 \
+      #       --tasks ${task} \
+      #       --gen_kwargs max_tokens=128,temperature=0.2 \
+      #       --limit 20 \
+      #       --batch_size 1 \
+      #       --seed 1234 \
+      #       --log_samples \
+      #       --output_path quality-results/${task}_${{ matrix.backend }}.json
 
-          eval "$RENAME_FN"
-          rename_samples_task_file ${task}
+      #     eval "$RENAME_FN"
+      #     rename_samples_task_file ${task}
 
-      - name: Run Math word problems (Chain-of-Thought) test
-        shell: bash
-        run: |
-          task=gsm8k_cot
-          lm_eval \
-            --model local-chat-completions \
-            --apply_chat_template \
-            --model_args model=meta-llama/Llama-3.2-1B-Instruct,base_url=http://localhost:8000/v1/chat/completions,num_concurrent=1,max_retries=3 \
-            --tasks ${task} \
-            --gen_kwargs max_tokens=128 \
-            --limit 20 \
-            --batch_size 1 \
-            --seed 1234 \
-            --log_samples \
-            --output_path quality-results/${task}_${{ matrix.backend }}.json
+      # - name: Run Math word problems (Chain-of-Thought) test
+      #   shell: bash
+      #   run: |
+      #     task=gsm8k_cot
+      #     lm_eval \
+      #       --model local-chat-completions \
+      #       --apply_chat_template \
+      #       --model_args model=meta-llama/Llama-3.2-1B-Instruct,base_url=http://localhost:8000/v1/chat/completions,num_concurrent=1,max_retries=3 \
+      #       --tasks ${task} \
+      #       --gen_kwargs max_tokens=128 \
+      #       --limit 20 \
+      #       --batch_size 1 \
+      #       --seed 1234 \
+      #       --log_samples \
+      #       --output_path quality-results/${task}_${{ matrix.backend }}.json
 
-          eval "$RENAME_FN"
-          rename_samples_task_file ${task}
+      #     eval "$RENAME_FN"
+      #     rename_samples_task_file ${task}
 
-      - name: Files in quality-results folder
-        shell: bash
-        run: |
-          ls quality-results/
+      # - name: Files in quality-results folder
+      #   shell: bash
+      #   run: |
+      #     ls quality-results/
 
       - name: Run on fail. debug docker
         if: failure() && matrix.group == 'docker'
@@ -393,22 +393,47 @@ jobs:
           pip install -r requirements/requirement-benchmark.txt
           pip install -r requirements/requirement-reports.txt
 
-      - name: Run GenAI-Perf benchmark
+      - name: Show CPU info
         shell: bash
         run: |
+          echo nproc: $(nproc)
+          lscpu
 
+      - name: Delete official benchmark files
+        shell: bash
+        run: |
+          find benchmark-results -maxdepth 1 -type f -regex '[0-9]+\.json' -print
+          find benchmark-results -maxdepth 1 -type f -regex '[0-9]+\.json' -delete
+
+      - name: Show GenAI-Perf help
+        shell: bash
+        run: |
+          genai-perf --help
+          genai-perf profile --help
+
+      - name: Run GenAI-Perf benchmark
+        env:
+          HF_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
+        shell: bash
+        run: |
           MODEL_ID="$(curl -sS http://localhost:8000/v1/models | jq -r '.data[0].id')"
           [ -n "${MODEL_ID}" ] || { echo "No models found at /v1/models"; exit 1; }
           echo "Using model: ${MODEL_ID}"
 
+          MODEL_SLUG="${MODEL_ID//\//_}"
+
           echo Starting Benchmarking:
           for i in 1 2 4 6 8; do
+            RUN_DIR=benchmark-results/${MODEL_SLUG}-openai-chat-concurrency${i}
+            mkdir -p ${RUN_DIR}
+            touch ${RUN_DIR}/genai-perf-${i}.json
+            echo ${RUN_DIR}
+            ls benchmark-results
             start=$(date +%s)
             echo Benchmarking concurrency $i:
             genai-perf \
               profile \
               --model ${MODEL_ID} \
-              --service-kind openai \
               --endpoint-type chat \
               --url http://localhost:8000 \
               --endpoint /v1/chat/completions \
@@ -419,21 +444,28 @@ jobs:
               --output-tokens-mean 64 \
               --extra-inputs max_tokens:64 \
               --tokenizer ${MODEL_ID} \
-              --profile-export-file ./benchmark-results/genai-perf-$2.json
+              --artifact-dir ${PWD}/benchmark-results  \
+              --profile-export-file genai-perf-${i}.json
             end=$(date +%s)
             elapsed=$(( end - start ))
             echo Benchmarking concurrency $i Finished
             echo "Elapsed: $((elapsed/60)) minutes $((elapsed%60)) seconds"
             echo " "
+            mv ${RUN_DIR}/genai-perf-${i}.json benchmark-results/
+            rm -rf ${RUN_DIR}
           done
+
+      - name: Show GuideLLM help
+        shell: bash
+        run: |
+          guidellm --help
+          guidellm benchmark --help
 
       - name: Run guidellm benchmark
         shell: bash
         env:
           HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
         run: |
-          echo nproc: $(nproc)
-          lscpu
           echo " "
           echo Starting Benchmarking:
           for i in 1 2 4 6 8; do
@@ -445,7 +477,7 @@ jobs:
               --rate $i \
               --max-requests 24 \
               --data "prompt_tokens=128,output_tokens=64" \
-              --output-path "./benchmark-results/$i.json"
+              --output-path "./benchmark-results/guidellm-$i.json"
             end=$(date +%s)
             elapsed=$(( end - start ))
             echo Benchmarking concurrency $i Finished

@@ -1,0 +1,505 @@
+name: llm
+on:
+  pull_request:
+    paths-ignore:
+      - "**.md"
+
+# Every time you make a push to your PR, it cancel immediately the previous checks,
+# and start a new one. The other runner will be available more quickly to your PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.backend }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            backend: llama.cpp-openblas
+            group: llama.cpp
+          - os: ubuntu-latest
+            backend: llama.cpp-opencl
+            group: llama.cpp
+          - os: ubuntu-latest
+            backend: llama.cpp-blis
+            group: llama.cpp
+          - os: ubuntu-latest
+            backend: llama.cpp-mkl
+            group: llama.cpp
+          - os: ubuntu-latest
+            backend: vllm-openvino
+            group: docker
+          # - os: ubuntu-latest
+          #   backend: cpu
+          #   group: docker
+    env:
+      RENAME_FN: |
+        rename_samples_task_file() {
+          task="$1"
+          f="quality-results/samples_${task}_"*.jsonl
+          f=$(basename $f)
+          ts="${f#samples_${task}_}"; ts="${ts%.jsonl}"
+          mv quality-results/samples_${task}_* quality-results/${task}_${{ matrix.backend }}_samples_$ts.jsonl
+        }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install deps llama.cpp-mkl
+        if: ${{ matrix.backend == 'llama.cpp-mkl' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev intel-mkl
+          
+      - name: Build vLLM llama.cpp-mkl
+        if: ${{ matrix.backend == 'llama.cpp-mkl' }}
+        shell: bash
+        run: |
+          # Build llama.cpp with mkl
+          git clone https://github.com/ggml-org/llama.cpp --depth 1 -b b6529
+          cd llama.cpp
+          cmake -S . -B build \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DGGML_BLAS=ON \
+            -DGGML_BLAS_VENDOR=Intel10_64lp \
+            -DBLAS_INCLUDE_DIRS=/usr/include/mkl/ \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j $(nproc)
+
+      - name: Install deps llama.cpp-blis
+        if: ${{ matrix.backend == 'llama.cpp-blis' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev libblis-dev
+          
+      - name: Build vLLM llama.cpp-blis
+        if: ${{ matrix.backend == 'llama.cpp-blis' }}
+        shell: bash
+        run: |
+          # Build llama.cpp with blis
+          git clone https://github.com/ggml-org/llama.cpp --depth 1 -b b6529
+          cd llama.cpp
+          cmake -S . -B build \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DGGML_BLAS=ON \
+            -DBLA_VENDOR=Generic \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j $(nproc)
+
+      - name: Install deps llama.cpp-opencl
+        if: ${{ matrix.backend == 'llama.cpp-opencl' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev ocl-icd-opencl-dev pocl-opencl-icd clinfo
+          clinfo
+          
+      - name: Build vLLM llama.cpp-opencl
+        if: ${{ matrix.backend == 'llama.cpp-opencl' }}
+        shell: bash
+        run: |
+          # Build llama.cpp with opencl
+          git clone https://github.com/ggml-org/llama.cpp --depth 1 -b b6529
+          cd llama.cpp
+          cmake -S . -B build \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DGGML_OPENCL=ON \
+            -DGGML_OPENCL_USE_ADRENO_KERNELS=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j $(nproc)
+
+      - name: Install deps llama.cpp-openblas
+        if: ${{ matrix.backend == 'llama.cpp-openblas' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenblas-dev libcurl4-openssl-dev
+          
+      - name: Build vLLM llama.cpp-openblas
+        if: ${{ matrix.backend == 'llama.cpp-openblas' }}
+        shell: bash
+        run: |
+          # Build llama.cpp with openblas
+          git clone https://github.com/ggml-org/llama.cpp --depth 1 -b b6529
+          cd llama.cpp
+          cmake -S . -B build \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DGGML_BLAS=ON \
+            -DGGML_BLAS_VENDOR=OpenBLAS \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j $(nproc)
+
+      - name: Download and convert hugging face to gguf
+        shell: bash
+        if: ${{ matrix.group == 'llama.cpp' }}
+        env:
+          HF_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
+        run: |
+          cd llama.cpp
+          # from inside llama.cpp/
+          pip install -r requirements/requirements-convert_hf_to_gguf.txt
+          python3 convert_hf_to_gguf.py \
+            --remote \
+            --outtype f16 \
+            --outfile models/llama-3.2-1b-instruct-f16.gguf \
+            meta-llama/Llama-3.2-1B-Instruct
+
+          # optional quantization
+          build/bin/llama-quantize models/llama-3.2-1b-instruct-f16.gguf \
+                    models/llama-3.2-1b-instruct-q4_k_m.gguf q4_K_M
+
+      - name: Run llama.cpp server
+        if: ${{ matrix.group == 'llama.cpp' }}
+        shell: bash
+        run: |
+          cd llama.cpp
+          # show help for llama-server
+          build/bin/llama-server --help
+
+          # from inside llama.cpp/
+          build/bin/llama-server \
+            --model models/llama-3.2-1b-instruct-q4_k_m.gguf \
+            --alias meta-llama/Llama-3.2-1B-Instruct \
+            --threads $(nproc) \
+            --parallel $(nproc) \
+            --host 0.0.0.0 \
+            --ctx-size 8192 \
+            --port 8000 &
+
+      - name: Build vLLM OpenVino
+        if: ${{ matrix.backend == 'vllm-openvino' }}
+        shell: bash
+        run: |
+          # Build vLLM from source for CPU with OpenVino
+          git clone https://github.com/vllm-project/vllm-openvino.git --depth 1
+          cd vllm-openvino
+          docker build . -f Dockerfile \
+            --tag vllm-openvino-env
+
+      - name: Run OpenVino vllm in docker
+        if: ${{ matrix.backend == 'vllm-openvino' }}
+        env:
+          HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
+        shell: bash
+        run: |
+          # show help for vllm.entrypoints.openai.api_server
+          docker run --rm \
+            --security-opt seccomp=unconfined \
+            --cap-add SYS_NICE \
+            --shm-size=4g \
+            -p 8000:8000 \
+            -e VLLM_OPENVINO_DEVICE=CPU \
+            -e VLLM_OPENVINO_ENABLE_QUANTIZED_WEIGHTS=ON \
+            -e VLLM_OPENVINO_KVCACHE_SPACE=12 \
+            -e VLLM_OPENVINO_KV_CACHE_PRECISION=u8 \
+            -e HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN \
+            vllm-openvino-env \
+            python3 -m vllm.entrypoints.openai.api_server \
+            --help
+
+          docker run -d \
+            --name llm-server \
+            --security-opt seccomp=unconfined \
+            --cap-add SYS_NICE \
+            --shm-size=4g \
+            -p 8000:8000 \
+            -e VLLM_OPENVINO_DEVICE=CPU \
+            -e VLLM_OPENVINO_ENABLE_QUANTIZED_WEIGHTS=ON \
+            -e VLLM_OPENVINO_KVCACHE_SPACE=12 \
+            -e VLLM_OPENVINO_KV_CACHE_PRECISION=u8 \
+            -e HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN \
+            vllm-openvino-env \
+            python3 -m vllm.entrypoints.openai.api_server \
+            --model meta-llama/Llama-3.2-1B-Instruct \
+            --host 0.0.0.0 \
+            --port 8000 \
+            --max-model-len 2048 \
+            --max-num-seqs $(nproc)
+
+      - name: Build vLLM (CPU-only)
+        if: ${{ matrix.backend == 'cpu' }}
+        shell: bash
+        run: |
+          # Build vLLM from source for CPU (no CUDA)
+          git clone https://github.com/vllm-project/vllm.git --depth 1 -b v0.10.2
+          cd vllm
+          docker build . -f docker/Dockerfile.cpu \
+            --build-arg VLLM_CPU_AVX512BF16=false \
+            --build-arg VLLM_CPU_AVX512VNNI=false \
+            --build-arg VLLM_CPU_DISABLE_AVX512=false \
+            --tag vllm-cpu-env \
+            --target vllm-openai
+
+      - name: Run vllm in docker
+        if: ${{ matrix.backend == 'cpu' }}
+        env:
+          HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
+        shell: bashh
+        run: |
+          docker run -d \
+            --name llm-server \
+            --security-opt seccomp=unconfined \
+            --cap-add SYS_NICE \
+            --shm-size=4g \
+            -p 8000:8000 \
+            -e HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN \
+            -e VLLM_CPU_KVCACHE_SPACE=2 \
+            vllm-cpu-env \
+            --model meta-llama/Llama-3.2-1B-Instruct \
+            --dtype bfloat16 \
+            --host localhost \
+            --port 8000 \
+            --max-model-len 2048 \
+            --max-num-seqs $(nproc)
+
+      - name: Install quality tests clients
+        shell: bash
+        run: |
+          pip install -r requirements/requirement-quality.txt
+
+      - name: Run smoke test
+        shell: bash
+        run: |
+          # Wait until the server is ready, then run a curl test
+          until curl -sf http://localhost:8000/health >/dev/null; do
+            echo -n .
+            sleep 2
+          done
+          echo " READY"
+          if [ "${{ matrix.group }}" = "docker" ]; then
+            docker logs --tail 3 llm-server
+          fi
+
+          echo old api result - for guidellm:
+          curl -s http://localhost:8000/v1/completions \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "model": "meta-llama/Llama-3.2-1B-Instruct",
+              "prompt": "Who is the spacex ceo?",
+              "max_tokens": 20
+            }'
+
+          echo " "
+          echo " "
+          echo new api reslut:
+          curl -s http://localhost:8000/v1/chat/completions \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "model": "meta-llama/Llama-3.2-1B-Instruct",
+              "messages": [{"role":"user","content":"Who is the SpaceX CEO?"}],
+              "max_tokens": 20,
+              "stream": false
+            }'
+
+      # - name: Show help and all quility tests names.
+      #   shell: bash
+      #   run: |
+      #     echo help:
+      #     lm_eval \
+      #       --help
+
+      #     echo " "
+      #     echo list_groups:
+      #     lm_eval \
+      #       --tasks list_groups
+
+      #     echo " "
+      #     echo task list
+      #     lm_eval \
+      #       --tasks list
+
+      # - name: Run Code generation test
+      #   shell: bash
+      #   run: |
+      #     export HF_ALLOW_CODE_EVAL=1
+      #     task=mbpp
+      #     lm_eval \
+      #       --confirm_run_unsafe_code \
+      #       --model local-chat-completions \
+      #       --apply_chat_template \
+      #       --model_args model=meta-llama/Llama-3.2-1B-Instruct,base_url=http://localhost:8000/v1/chat/completions,num_concurrent=1,max_retries=3 \
+      #       --tasks ${task} \
+      #       --gen_kwargs max_tokens=128,temperature=0 \
+      #       --limit 20 \
+      #       --batch_size 1 \
+      #       --seed 1234 \
+      #       --log_samples \
+      #       --output_path quality-results/${task}_${{ matrix.backend }}.json
+
+      #     eval "$RENAME_FN"
+      #     rename_samples_task_file ${task}
+
+      # - name: Run Summarization test
+      #   shell: bash
+      #   run: |
+      #     task=xsum
+      #     lm_eval \
+      #       --model local-chat-completions \
+      #       --apply_chat_template \
+      #       --model_args model=meta-llama/Llama-3.2-1B-Instruct,base_url=http://localhost:8000/v1/chat/completions,num_concurrent=1,max_retries=3 \
+      #       --tasks ${task} \
+      #       --gen_kwargs max_tokens=128,temperature=0.2 \
+      #       --limit 20 \
+      #       --batch_size 1 \
+      #       --seed 1234 \
+      #       --log_samples \
+      #       --output_path quality-results/${task}_${{ matrix.backend }}.json
+
+      #     eval "$RENAME_FN"
+      #     rename_samples_task_file ${task}
+
+      # - name: Run Math word problems (Chain-of-Thought) test
+      #   shell: bash
+      #   run: |
+      #     task=gsm8k_cot
+      #     lm_eval \
+      #       --model local-chat-completions \
+      #       --apply_chat_template \
+      #       --model_args model=meta-llama/Llama-3.2-1B-Instruct,base_url=http://localhost:8000/v1/chat/completions,num_concurrent=1,max_retries=3 \
+      #       --tasks ${task} \
+      #       --gen_kwargs max_tokens=128 \
+      #       --limit 20 \
+      #       --batch_size 1 \
+      #       --seed 1234 \
+      #       --log_samples \
+      #       --output_path quality-results/${task}_${{ matrix.backend }}.json
+
+      #     eval "$RENAME_FN"
+      #     rename_samples_task_file ${task}
+
+      # - name: Files in quality-results folder
+      #   shell: bash
+      #   run: |
+      #     ls quality-results/
+
+      - name: Run on fail. debug docker
+        if: failure() && matrix.group == 'docker'
+        shell: bash
+        run: |
+          docker inspect -f 'Running={{.State.Running}} OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}}' llm-server
+          docker logs --tail 200 llm-server
+          free -h
+          ss -ltnp | grep ':8000' || true
+
+      - name: Install python dependencies for benchmark + reports
+        shell: bash
+        run: |
+          pip install -r requirements/requirement-benchmark.txt
+          pip install -r requirements/requirement-reports.txt
+
+      - name: Show CPU info
+        shell: bash
+        run: |
+          echo nproc: $(nproc)
+          lscpu
+
+      - name: Delete official benchmark files
+        shell: bash
+        run: |
+          find benchmark-results -maxdepth 1 -type f -regex '[0-9]+\.json' -print
+          find benchmark-results -maxdepth 1 -type f -regex '[0-9]+\.json' -delete
+
+      - name: Show GenAI-Perf help
+        shell: bash
+        run: |
+          genai-perf --help
+          genai-perf profile --help
+
+      - name: Run GenAI-Perf benchmark
+        env:
+          HF_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
+        shell: bash
+        run: |
+          MODEL_ID="$(curl -sS http://localhost:8000/v1/models | jq -r '.data[0].id')"
+          [ -n "${MODEL_ID}" ] || { echo "No models found at /v1/models"; exit 1; }
+          echo "Using model: ${MODEL_ID}"
+
+          MODEL_SLUG="${MODEL_ID//\//_}"
+
+          echo Starting Benchmarking:
+          for i in 1 2 4 6 8; do
+            RUN_DIR=benchmark-results/${MODEL_SLUG}-openai-chat-concurrency${i}
+            mkdir -p ${RUN_DIR}
+            touch ${RUN_DIR}/genai-perf-${i}.json
+            echo ${RUN_DIR}
+            ls benchmark-results
+            start=$(date +%s)
+            echo Benchmarking concurrency $i:
+            genai-perf \
+              profile \
+              --model ${MODEL_ID} \
+              --endpoint-type chat \
+              --url http://localhost:8000 \
+              --endpoint /v1/chat/completions \
+              --streaming \
+              --concurrency $i \
+              --num-requests 24 \
+              --synthetic-input-tokens-mean 128 \
+              --output-tokens-mean 64 \
+              --extra-inputs max_tokens:64 \
+              --tokenizer ${MODEL_ID} \
+              --artifact-dir ${PWD}/benchmark-results  \
+              --profile-export-file genai-perf-${i}.json
+            end=$(date +%s)
+            elapsed=$(( end - start ))
+            echo Benchmarking concurrency $i Finished
+            echo "Elapsed: $((elapsed/60)) minutes $((elapsed%60)) seconds"
+            echo " "
+            mv ${RUN_DIR}/genai-perf-${i}.json benchmark-results/
+            rm -rf ${RUN_DIR}
+          done
+
+      - name: Show GuideLLM help
+        shell: bash
+        run: |
+          guidellm --help
+          guidellm benchmark --help
+
+      - name: Run guidellm benchmark
+        shell: bash
+        env:
+          HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
+        run: |
+          echo " "
+          echo Starting Benchmarking:
+          for i in 1 2 4 6 8; do
+            start=$(date +%s)
+            echo Benchmarking concurrency $i:
+            guidellm benchmark \
+              --target "http://localhost:8000" \
+              --rate-type concurrent \
+              --rate $i \
+              --max-requests 24 \
+              --data "prompt_tokens=128,output_tokens=64" \
+              --output-path "./benchmark-results/guidellm-$i.json"
+            end=$(date +%s)
+            elapsed=$(( end - start ))
+            echo Benchmarking concurrency $i Finished
+            echo "Elapsed: $((elapsed/60)) minutes $((elapsed%60)) seconds"
+            echo " "
+          done
+
+      - name: Files in benchmark-results folder
+        shell: bash
+        run: |
+          ls benchmark-results
+
+      - name: Create reports
+        shell: bash
+        run: |
+          echo Start reports
+          python scripts/create_reports.py
+
+      - name: Upload benchmark and reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux_logs_${{ matrix.backend }}_${{ github.event.pull_request.head.sha }}
+          path: |
+            benchmark-results/*.json
+            reports/*.png

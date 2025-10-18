@@ -88,6 +88,7 @@ jobs:
         shell: bash
         run: |
           lerobot-eval --help
+          pip list
 
       - name: Benchmarking lerobot/smolvla
         if: ${{ matrix.backend == 'lerobot-smolvla' }}
@@ -102,6 +103,8 @@ jobs:
             --env.task=libero_object \
             --eval.n_episodes=1 \
             --eval.batch_size=1 \
+            --policy.input_features='{"observation.images.image":  {"type":"VISUAL","shape":[3,256,256]}, "observation.images.image2": {"type":"VISUAL","shape":[3,256,256]}}' \
+            --policy.output_features='{"action":{"type":"ACTION","shape":[7]}}' \
             --output vla-results/smolvla_libero_cpu.json
 
       - name: Install deps llama.cpp-mkl
@@ -220,6 +223,9 @@ jobs:
               --outfile models/${MODEL_SLUG}-mmproj-f16.gguf \
               ${MODEL_ID}
           fi
+          rm -rf models/${MODEL_SLUG}-f16.gguf
+          ls ~/.cache
+          rm -rf ~/.cache
 
       - name: Run llama.cpp server
         env:
